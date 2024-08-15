@@ -4,3 +4,19 @@ Requirements
 You need to be able to hold 48 hours of compressed data in 80% of your RAM.
 You want enough hyper-threads/vCPUs (each giving you 1GB/s search) to be able to search 24 hours of data in less than 10 seconds.
 You need disk space to hold your compressed data. Never fill your disk more than 80%
+Falcon Logscale recommends at least 16 CPU cores, 32 GB of memory, and a 1 GBit Network card for single server set up on production environment. Disk space will depend on the amount of ingested data per day and the number of retention days. This is calculated as follows: Retention Days x GB Injected / Compression Factor. That will determine the needed disk space for a single server.
+Set Up Used in this Doc:
+
+Data: 200GB partition at /data partition
+
+RAM: 32GB
+CPU: 8 Cores
+Kafka Version: 2.13-3.7.0
+Humio Falcon Version: 1.142.1
+
+Increase Open File Limit:
+For production usage, Humio needs to be able to keep a lot of files open for sockets and actual files from the file system.
+
+You can verify the actual limits for the process using:
+PID=`ps -ef | grep java | grep humio-assembly | head -n 1 | awk '{print $2}'`
+cat /proc/$PID/limits | grep 'Max open files'
