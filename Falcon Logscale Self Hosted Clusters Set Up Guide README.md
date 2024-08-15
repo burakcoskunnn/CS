@@ -1,5 +1,5 @@
-# Humio Falcon Logscale Self Hosted Single Node Server Set Up Guide
-## Doc Updated As of: 6th June, 2024
+# Falcon Logscale Self Hosted Clusters Set Up Guide
+## Doc Updated As of: 15/08/2024
 
 ## Requirements
 
@@ -17,13 +17,11 @@ This is calculated as follows: Retention Days x GB Injected / Compression Factor
 
 **RAM:** 32GB
 
-**CPU:** 4 Cores
+**CPU:** 8 Cores
 
-**Kafka Version:** 2.13-3.3.2
+**Kafka Version:** 2.13-3.7.0
 
-**Zookeeper Version:** 3.7.1
-
-**Humio Falcon Version:** 1.136.1
+**Humio Falcon Version:** 1.142.1
 
 
 
@@ -92,17 +90,9 @@ tmpfs /tmp tmpfs mode=1777,nosuid,nodev 0 0
 
 **Humio requires a Java version 17 or later JVM to function properly.** (Doc updated to use JDK 21 as Logscale will drop support for JDK version below 17 Soon)
 
-Download the latest JDK 21 x64 compressed archive from here: <https://download.oracle.com/java/21/archive/jdk-21.0.2_linux-x64_bin.tar.gz>
-
-**Installing JDK21 By unextracting the compressed archive:**
-Extract the jdk tar archive to /usr/local/jdk directory
-
 ```
-tar -xf jdk-21.0.2_linux-x64_bin.tar.gz -C /usr/local/jdk
-cd /usr/local/jdk
-mv jdk-21.0.2/* .
-
-chmod -R o+rx /usr/local/jdk
+wget https://cdn.azul.com/zulu/bin/zulu21.36.19-ca-crac-jdk21.0.4-linux.x86_64.rpm
+rpm -i zulu21.36.19-ca-crac-jdk21.0.4-linux.x86_64.rpm
 ```
 
 ## Installing Kafka
@@ -116,29 +106,29 @@ $ sudo adduser kafka --shell=/bin/false --no-create-home --system --group
 Download kafka:
 
 ```
-$ curl -o kafka_2.13-3.3.2.tgz https://dlcdn.apache.org/kafka/3.3.2/kafka_2.13-3.3.2.tgz
+$ curl -o kafka_2.13-3.7.0.tgz https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz
 ```
 
 **Create the following directories**
 ```
-$ mkdir /data /usr/local/falcon
+$ mkdir /data /opt/kafka
 ```
 
-**Untar kafka to /usr/local/falcon directory**
+**Untar kafka to /opt/kafka directory**
 
 ```
-$ sudo tar -zxf kafka_2.13-3.3.2.tgz /usr/local/falcon/
+$ sudo tar -zxf kafka_2.13-3.7.0.tgz /opt/kafka/
 ```
 
 **Create the following directory**
 
 ```
-$ sudo mkdir -p /data/kafka/log /data/kafka/kafka-data
+$ sudo mkdir -p /data/kafka/ /data/kafka/kafka-data /data/kafka/zookeeper-data /var/log/kafka /var/log/zookeeper
 $ sudo chown -R kafka:kafka /data/kafka
-$ sudo chown -R kafka:kafka /usr/local/falcon/kafka_2.13-3.3.2
+$ sudo chown -R kafka:kafka /opt/kafka
 ```
 
-Navigate to `/usr/local/falcon/kafka/config` and then edit the following details of the `server.properties` file.
+Navigate to `/opt/kafka/config` and then edit the following details of the `server.properties` file.
 
 ```
 broker.id=1
@@ -146,7 +136,91 @@ log.dirs=/data/kafka/log
 delete.topic.enable = true
 ```
 
-Now create a file named `kafka.service` under `/etc/systemd/system` directory and paste the following details inside that file.
+
+**zookeeper configuration.**
+To configure the properties for ZooKeeper, edit the ``` kafka/config/zookeeper.properties ``` file with the following options:
+```
+dataDir=/data/kafka/zookeeper-data
+clientPort=2181
+maxClientCnxns=0
+admin.enableServer=false
+server.1=kafka1:2888:3888
+server.2=kafka2:2888:3888
+server.3=kafka3:2888:3888
+4lw.commands.whitelist=*
+tickTime=2000
+initLimit=5
+syncLimit=2
+```
+
+
+
+Create a `myid` file in the `data` sub-directory with just the number `1` as its contents. This number will be in order for each node. 1,2,3
+
+```
+$ echo 1 > /data/kafka/zookeeper-data/myid
+$ chown -R kafka:kafka /data/kafka/zookeeper-data
+```
+**do this for each node.**
+**The number in myid must be unique on each host, and match the broker.id configured for Kafka.**
+
+Create a service file for ZooKeeper so that it will run as a system service and be automatically managed to keep running.
+
+Create the file ```/etc/systemd/system/zookeeper.service ``` sub-directory, edit the file add the following lines:
+```
+[Unit]
+
+[Service]
+Type=simple
+User=kafka
+LimitNOFILE=800000
+Environment="LOG_DIR=/var/log/zookeeper"
+Environment="GC_LOG_ENABLED=true"
+Environment="KAFKA_HEAP_OPTS=-Xms512M -Xmx4G"
+ExecStart=/opt/kafka/bin/zookeeper-server-start.sh /opt/kafka/config/zookeeper.properties
+Restart=on-failure
+TimeoutSec=900
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+**Then you can start Zookeeper to verify that the configuration is working**
+
+```
+$ systemctl start zookeeper
+```
+
+**Check if the service is running by using the status command:**
+```
+$ systemctl status zookeeper
+```
+**Output similar to the following showing active (running) if the service is OK:**
+
+```
+zookeeper.service
+     Loaded: loaded (/etc/systemd/system/zookeeper.service; disabled; vendor preset: enabled)
+     Active: active (running) since Thu 2024-03-07 05:31:36 GMT; 1s ago
+   Main PID: 4968 (java)
+      Tasks: 16 (limit: 1083)
+     Memory: 24.6M
+        CPU: 1.756s
+     CGroup: /system.slice/zookeeper.service
+             ??4968 java -Xms512M -Xmx4G -server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent -XX:MaxInlineLevel=15 -Djava.awt.headless=true "-Xlog:gc*:file=/var/log/zookeeper/zookeeper-gc.log:time,tags:filecount=10,filesize=100M" -Dcom.sun.management.>
+
+Mar 07 05:31:36 kafka1 systemd[1]: Started zookeeper.service.
+```
+
+**This should report any issues which should be addressed before starting the service again. If everything is OK, enable the service so that it will always start on boot:**
+
+```
+$ systemctl enable zookeeper
+```
+
+**Now create a service for Kafka. The configuration file is slightly different because there is a dependency added so that the system will start ZooKeeper first if it is not running before trying to Kafka.**
+
+Create the file /etc/systemd/system/kafka.service sub-directory, edit the file add the following lines:
 
 ```
 [Unit]
@@ -157,157 +231,39 @@ After=zookeeper.service
 Type=simple
 User=kafka
 LimitNOFILE=800000
-Environment="JAVA_HOME=/usr/local/jdk"
-Environment="LOG_DIR=/data/kafka/log/kafka"
+Environment="LOG_DIR=/var/log/kafka"
 Environment="GC_LOG_ENABLED=true"
 Environment="KAFKA_HEAP_OPTS=-Xms512M -Xmx4G"
-ExecStart=/usr/local/falcon/kafka/bin/kafka-server-start.sh /usr/local/falcon/kafka/config/server.properties
+ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
 Restart=on-failure
+TimeoutSec=900
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-**If we look at the \[Unit\] section, we’ll see it requires zookeeper service. So we have to install zookeeper before we can start kafka service.**
-
-## Installing Zookeeper
-
-Download Zookeeper:
+**Now start the Kafka service:**
 
 ```
-$ curl -o zookeeper-3.7.1-bin.tar.gz https://dlcdn.apache.org/zookeeper/zookeeper-3.7.1/apache-zookeeper-3.7.1-bin.tar.gz
-```
-
-Creating zookeeper system user
-
-```
-$ sudo adduser zookeeper --shell=/bin/false --no-create-home --system --group
-```
-
-**Untar Zookeeper to `/usr/local/falcon` directory**
-
-```
-$ sudo tar -zxf zookeeper-3.7.1-bin.tar.gz /usr/local/falcon/
-$ sudo mkdir -p /data/zookeeper/data
-$ sudo ln -s /usr/local/falcon/apache-zookeeper-3.7.1-bin /usr/local/falcon/zookeeper
-$ sudo chown -R zookeeper:zookeeper /data/zookeeper
-```
-
-**Create a file named `zoo.cfg` inside `/usr/local/falcon/zookeeper/conf` directory**
-
-```
-$ sudo vi /usr/local/falcon/zookeeper/conf/zoo.cfg
-```
-
-**Paste the following lines inside that file**
-
-```
-tickTime = 2000
-dataDir = /data/zookeeper/data
-clientPort = 2181
-initLimit = 5
-syncLimit = 2
-maxClientCnxns=60
-autopurge.purgeInterval=1
-admin.enableServer=false
-4lw.commands.whitelist=*
-admin.enableServer=false
-```
-
-Create a `myid` file in the `data` sub-directory with just the number `1` as its contents.
-
-```
-$ sudo bash -c 'echo 1 > /data/zookeeper/data/myid'
-```
-
-Mentioning jdk path variable so that zookeeper uses that
-
-Create a file named `java.env` inside `/usr/local/falcon/zookeeper/conf` directory and add the following line.
-
-```
-## Adding Custom JAVA_HOME
-
-JAVA_HOME="/usr/local/jdk"
-```
-
-**Then you can start Zookeeper to verify that the configuration is working**
-
-**Give proper permissions to zookeeper directory**
-
-```
-$ sudo chown -R zookeeper:zookeeper /usr/local/falcon/apache-zookeeper-3.7.1-bin/
-```
-
-**Finally test if everything is ok or not by starting the server. ( You have to do it as root user)**
-
-```
-$ ./bin/zkServer.sh start
-```
-
-**If the server starts successfully it will show the following message**
-
-```
-/usr/local/java/bin/java
-ZooKeeper JMX enabled by default
-Using config: /usr/local/falcon/apache-zookeeper-3.7.1-bin/bin/../conf/zoo.cfg
-Starting zookeeper ... STARTED
-```
-
-**Now we have to create a service to file to start zookeeper as a service. Create a `zookeeper.service` file inside `/etc/systemd/system/` directory and paste the following lines**
-
-```
-[Unit]
-Description=Zookeeper Daemon
-Documentation=http://zookeeper.apache.org
-Requires=network.target
-After=network.target
-
-[Service]
-Type=forking
-WorkingDirectory=/usr/local/falcon/zookeeper
-User=zookeeper
-Group=zookeeper
-ExecStart=/usr/local/falcon/zookeeper/bin/zkServer.sh start /usr/local/falcon/zookeeper/conf/zoo.cfg
-ExecStop=/usr/local/falcon/zookeeper/bin/zkServer.sh stop /usr/local/falcon/zookeeper/conf/zoo.cfg
-ExecReload=/usr/local/falcon/zookeeper/bin/zkServer.sh restart /usr/local/falcon/zookeeper/conf/zoo.cfg
-TimeoutSec=30
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-
-**After all things are done correctly start zookeeper by executing the below command. But before that check, if there is any log created by the root user inside `/usr/local/falcon/zookeeper/logs` directory. If there are any logs, remove them.**
-
-**Now start zookeeper.**
-
-```
-$ sudo systemctl start zookeeper
-$ systemctl status zookeeper
-$ sudo systemctl enable zookeeper
-```
-
-**After starting zookeeper we can now start Kafka.**
-
-```
-$ sudo systemctl enable kafka
-$ sudo systemctl start kafka
+$ systemctl start kafka
 $ systemctl status kafka
+$ systemctl enable kafka
 ```
 
 ## Setting up Falcon Logscale
 
-**Create falcon user**
+**Create humio user**
 
 ```
-$ sudo adduser falcon --shell=/bin/false --no-create-home --system --group
+$ sudo adduser humio --shell=/bin/false --no-create-home --system --group
 ```
 
 **Creating falcon directories**
 
 ```
-$ sudo mkdir -p /data/falcon/log/ /data/falcon/data /usr/local/falcon/falcon_app
-$ sudo chown -R falcon:falcon /etc/falcon/ /data/falcon
+$ sudo mkdir -p /data/humio/ /data/humio/data /opt/humio /etc/humio/filebeat /var/log/humio
+$ chown -R humio:humio /data/humio/ /data/humio/data /opt/humio /etc/humio/filebeat /var/log/humio
+
 ```
 
 **We are now ready to download and install Falcon Logscale’s software. Download latest falcon logscale stable version from here:**
@@ -315,43 +271,37 @@ $ sudo chown -R falcon:falcon /etc/falcon/ /data/falcon
 [**https://repo.humio.com/service/rest/repository/browse/maven-releases/com/humio/server/**](https://repo.humio.com/service/rest/repository/browse/maven-releases/com/humio/server/)
 
 ```
-$ curl -o server-1.136.1.tar.gz https://repo.humio.com/repository/maven-releases/com/humio/server/1.136.1/server-1.136.1.tar.gz
-
-$ tar -xzf server-1.136.1.tar.gz
-
-$ cd humio
-
-$ mv * /usr/local/falcon/falcon_app
-
-$ sudo chown -R falcon:falcon /usr/local/falcon/falcon_app
+$ cd /opt/humio/
+$ wget https://repo.humio.com/service/rest/repository/browse/maven-releases/com/humio/server/1.142.1/
+$ tar xzf server-linux_x64-1.142.1.tar.gz
+$ sudo chown -R humio:humio /opt/humio/
 ```
 
 **Using a simple text editor, create the falcon logscale configuration file, `server.conf` in the `/etc/falcon` directory. You will need to enter a few environment variables in this configuration file to run Humio on a single server or instance. Below are those basic settings:**
 
 ```
-$ sudo vim /etc/falcon/server.conf
+$ sudo vi /etc/humio/server.conf
 ```
 
 ```
-BOOTSTRAP_HOST_ID=1
-DIRECTORY=/data/falcon/data
-JAVA_HOME=/usr/local/jdk
-HUMIO_AUDITLOG_DIR=/data/falcon/log
-HUMIO_DEBUGLOG_DIR=/data/falcon/log
-JVM_LOG_DIR=/data/falcon/log
+AUTHENTICATION_METHOD=single-user
+DIRECTORY=/data/humio/data
+HUMIO_AUDITLOG_DIR=/var/log/humio
+HUMIO_DEBUGLOG_DIR=/var/log/humio
+JVM_LOG_DIR=/var/log/humio
 HUMIO_PORT=8080
-KAFKA_SERVERS=<hostip>:9092
-EXTERNAL_URL=http://<hostip or domain>:8080
-PUBLIC_URL=http://<hostip or domain>
-HUMIO_SOCKET_BIND=0.0.0.0
-HUMIO_HTTP_BIND=0.0.0.0
+ELASTIC_PORT=9200
+
+KAFKA_SERVERS=kafka1:9092,kafka2:9092,kafka3:9092
+EXTERNAL_URL=http://127.0.0.1:8080
+PUBLIC_URL=http://127.0.0.1
 ```
 
 **In the last create the `falcon.service` file inside `/etc/systemd/system/` directory and paste the below contents**
 
 ```
 [Unit]
-Description=Falcon Logscale service
+Description=LogScale service
 After=network.service
 
 [Service]
@@ -360,9 +310,10 @@ Restart=on-abnormal
 User=humio
 Group=humio
 LimitNOFILE=250000:250000
-EnvironmentFile=/etc/falcon/server.conf
-WorkingDirectory=/data/falcon
-ExecStart=/usr/local/falcon/falcon_app/bin/humio-server-start.sh
+EnvironmentFile=/etc/humio/server.conf
+WorkingDirectory=/data/humio
+ExecStart=/opt/humio/humio/bin/humio-server-start.sh
+TimeoutSec=900
 
 [Install]
 WantedBy=default.target
@@ -371,7 +322,9 @@ WantedBy=default.target
 **Start the falcon logscale server by executing the following command:**
 
 ```
-$ sudo systemctl start falcon
+$ sudo systemctl start humio
+$ sudo systemctl enable humio
+
 ```
 
 **Check for any errors in falcon end:**
@@ -380,6 +333,6 @@ $ sudo systemctl start falcon
 $ journalctl -fu falcon
 ```
 
-We can also check the logscale logs for errors here: `/data/falcon/log`
+We can also check the logscale logs for errors here: `/var/humio/log`
 
 If there is no error, you can access the falcon logscale site by visiting `http://<serverip>:8080` on your browser.
