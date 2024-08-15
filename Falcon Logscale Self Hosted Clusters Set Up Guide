@@ -1,1 +1,6 @@
-test
+Falcon Logscale Self Hosted Clusters Set Up Guide
+Doc Updated As of: 15/08/2024
+Requirements
+You need to be able to hold 48 hours of compressed data in 80% of your RAM.
+You want enough hyper-threads/vCPUs (each giving you 1GB/s search) to be able to search 24 hours of data in less than 10 seconds.
+You need disk space to hold your compressed data. Never fill your disk more than 80%
